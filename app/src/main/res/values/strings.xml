@@ -24,6 +24,8 @@
     <string name="physical_keyboard_input_mode_title">日本語入力方式</string>
     <string name="physical_keyboard_input_mode_romaji">ローマ字入力</string>
     <string name="physical_keyboard_input_mode_kana">かな入力</string>
+    <string name="physical_keyboard_floating_dock_visibility_title">Show the bottom physical keyboard dock</string>
+    <string name="physical_keyboard_floating_dock_visibility_summary">Shows the input mode dock at the bottom of the screen while a physical keyboard is connected.</string>
     <string name="physical_keyboard_shortcut_setting_title">物理キーボードショートカット</string>
     <string name="physical_keyboard_shortcut_setting_summary">Ctrl+C、変換キー、無変換キー、Fキーなどにアクションを割り当てます。</string>
     <string name="physical_keyboard_shortcut_list_title">物理キーボードショートカット</string>

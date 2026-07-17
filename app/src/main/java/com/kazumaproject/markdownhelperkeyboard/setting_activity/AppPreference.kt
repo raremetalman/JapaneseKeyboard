@@ -509,6 +509,8 @@ object AppPreference {
 
     private val PHYSICAL_KEYBOARD_INPUT_MODE_PREFERENCE =
         Pair("physical_keyboard_input_mode_preference", "romaji")
+    private val PHYSICAL_KEYBOARD_FLOATING_DOCK_VISIBILITY_PREFERENCE =
+        Pair("physical_keyboard_floating_dock_visibility_preference", true)
 
     private val ROMAJI_MAP_DATA_VERSION = Pair("romaji_map_data_version", 0)
 
@@ -2767,6 +2769,15 @@ object AppPreference {
         ) ?: PHYSICAL_KEYBOARD_INPUT_MODE_PREFERENCE.second
         set(value) = preferences.edit {
             it.putString(PHYSICAL_KEYBOARD_INPUT_MODE_PREFERENCE.first, value)
+        }
+
+    var physical_keyboard_floating_dock_visibility_preference: Boolean
+        get() = preferences.getBoolean(
+            PHYSICAL_KEYBOARD_FLOATING_DOCK_VISIBILITY_PREFERENCE.first,
+            PHYSICAL_KEYBOARD_FLOATING_DOCK_VISIBILITY_PREFERENCE.second
+        )
+        set(value) = preferences.edit {
+            it.putBoolean(PHYSICAL_KEYBOARD_FLOATING_DOCK_VISIBILITY_PREFERENCE.first, value)
         }
 
     var romaji_map_data_version: Int

@@ -4702,12 +4702,17 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
             }
         }
 
-        if (floatingDockWindow == null) {
+        val showFloatingDock =
+            appPreference.physical_keyboard_floating_dock_visibility_preference
+        if (showFloatingDock && floatingDockWindow == null) {
             floatingDockWindow = PopupWindow(
                 floatingDockView,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT
             )
+        } else if (!showFloatingDock) {
+            floatingDockWindow?.dismiss()
+            floatingDockWindow = null
         }
 
         if (floatingModeSwitchWindow == null) {

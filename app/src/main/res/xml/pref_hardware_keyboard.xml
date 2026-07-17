@@ -12,6 +12,13 @@
             android:title="@string/physical_keyboard_input_mode_title"
             app:useSimpleSummaryProvider="true" />
 
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:key="physical_keyboard_floating_dock_visibility_preference"
+            android:title="@string/physical_keyboard_floating_dock_visibility_title"
+            app:iconSpaceReserved="false"
+            app:summary="@string/physical_keyboard_floating_dock_visibility_summary" />
+
         <Preference
             android:key="physical_keyboard_shortcut_setting_preference"
             android:summary="@string/physical_keyboard_shortcut_setting_summary"
