@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/keyboard_bg"
+    android:orientation="horizontal">
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/physical_keyboard_candidate_recycler_view"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:clipToPadding="false"
+        android:overScrollMode="never"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp" />
+
+    <TextView
+        android:id="@+id/physical_keyboard_candidate_next_page"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:background="@drawable/pager_item_background"
+        android:contentDescription="@string/physical_keyboard_candidate_next_page"
+        android:gravity="center"
+        android:minWidth="64dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:textColor="@color/keyboard_icon_color"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+</LinearLayout>

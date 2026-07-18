@@ -187,6 +187,7 @@ import com.kazumaproject.markdownhelperkeyboard.dictionary_override.DictionarySo
 import com.kazumaproject.markdownhelperkeyboard.gemma.GemmaTranslationManager
 import com.kazumaproject.markdownhelperkeyboard.gemma.database.GemmaPromptTemplate
 import com.kazumaproject.markdownhelperkeyboard.ime_service.adapters.FloatingCandidateListAdapter
+import com.kazumaproject.markdownhelperkeyboard.ime_service.adapters.PhysicalKeyboardCandidateBarAdapter
 import com.kazumaproject.markdownhelperkeyboard.ime_service.adapters.GridSpacingItemDecoration
 import com.kazumaproject.markdownhelperkeyboard.ime_service.adapters.ShortcutAdapter
 import com.kazumaproject.markdownhelperkeyboard.ime_service.adapters.SuggestionAdapter
@@ -345,6 +346,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.regex.Pattern
 import javax.inject.Inject
+import kotlin.math.roundToInt
 import androidx.appcompat.R as AppCompatR
 import com.google.android.material.R as MaterialR
 
@@ -545,8 +547,8 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
     private var flickGuideMaxCharactersPreference: Int? = 1
 
     private var floatingCandidateWindow: PopupWindow? = null
-    private lateinit var floatingCandidateView: View
     private lateinit var listAdapter: FloatingCandidateListAdapter
+    private lateinit var physicalKeyboardCandidateBarAdapter: PhysicalKeyboardCandidateBarAdapter
 
     private var floatingDockWindow: PopupWindow? = null
     private lateinit var floatingDockView: FloatingDockView
@@ -1459,6 +1461,14 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
     private val keyboardFloatingMode = _keyboardFloatingMode.asStateFlow()
 
     private var keyboardContainer: FrameLayout? = null
+    private var physicalCandidateSpaceReservationView: FrameLayout? = null
+    private var physicalCandidateBarView: View? = null
+    private var physicalCandidateRecyclerView: RecyclerView? = null
+    private var physicalCandidateNextPageView: TextView? = null
+    private var isPhysicalCandidateSpaceReserved: Boolean = false
+    private var physicalCandidateBarHeightPx: Int = 0
+    private var physicalCandidateNavigationBarBottomInsetPx: Int = 0
+    private var wasPhysicalKeyboardEnabledForCandidateSpace: Boolean = false
 
     private var isSpaceKeyLongPressed = false
     private var suppressSpaceConvertTapUntilUptimeMillis = 0L
@@ -1562,6 +1572,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         private const val DEFAULT_DELAY_MS = 1000L
         private const val DEFAULT_LIVE_CONVERSION_APPLY_DELAY_MS = 120L
         private const val PAGE_SIZE: Int = 5
+        private const val PHYSICAL_CANDIDATE_SPACE_HEIGHT_DP = 52f
         private const val ZENZ_LIVE_SLOT_EMPTY_TEXT = "..."
         private val ZENZ_LIVE_SLOT_TYPE = (33).toByte()
         private val ZENZ_LIVE_SLOT_TYPES = setOf(
@@ -1889,40 +1900,12 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
 
         inputManager = getSystemService(Context.INPUT_SERVICE) as InputManager
         inputManager.registerInputDeviceListener(this, null)
-        floatingCandidateView = layoutInflater.inflate(R.layout.floating_candidate_layout, null)
         listAdapter = FloatingCandidateListAdapter(
             pageSize = PAGE_SIZE,
         )
-        listAdapter.onSuggestionClicked = { suggestion: CandidateItem ->
-            val tail = FloatingCandidateTailResolver.resolveTail(
-                originalInput = inputString.value,
-                selectedCandidateLength = suggestion.length.toInt()
-            )
-            stringInTail.set(tail)
-            if (tail.isNotEmpty()) {
-                commitText(suggestion.word, 1)
-                finishComposingText()
-                updateSuggestionsForFloatingCandidate(emptyList())
-                _inputString.update { tail }
-                listAdapter.updateHighlightPosition(RecyclerView.NO_POSITION)
-                currentHighlightIndex = RecyclerView.NO_POSITION
-                scope.launch {
-                    delay(64)
-                    floatingCandidateNextItem(insertString = tail)
-                }
-            } else {
-                if (suggestion.word.isNotBlank()) {
-                    rememberZeroQueryKeyAfterCommit(suggestion.word)
-                }
-                commitText(suggestion.word, 1)
-                finishComposingText()
-                updateSuggestionsForFloatingCandidate(emptyList())
-                _inputString.update { "" }
-                listAdapter.updateHighlightPosition(RecyclerView.NO_POSITION)
-                currentHighlightIndex = RecyclerView.NO_POSITION
-                consumePendingZeroQueryAfterCommit()
-            }
-        }
+        physicalKeyboardCandidateBarAdapter = PhysicalKeyboardCandidateBarAdapter()
+        listAdapter.onSuggestionClicked = ::commitPhysicalKeyboardCandidate
+        physicalKeyboardCandidateBarAdapter.onCandidateClicked = ::commitPhysicalKeyboardCandidate
         listAdapter.onPagerClicked = {
             goToNextPageForFloatingCandidate()
         }
@@ -4180,6 +4163,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
         Timber.d("onUpdate onFinishInputView")
+        setPhysicalCandidateSpaceReserved(reserved = false)
         clearZeroQueryAllState(refresh = false)
         stopAllOngoingKeyLongPresses()
         disableKeyboardLayoutEditMode()
@@ -4494,12 +4478,88 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
 
     override fun onComputeInsets(outInsets: Insets?) {
         super.onComputeInsets(outInsets)
-        if ((physicalKeyboardEnable.replayCache.isNotEmpty() && physicalKeyboardEnable.replayCache.first()) || isKeyboardFloatingMode == true) {
+        if (physicalKeyboardEnable.replayCache.firstOrNull() == true) {
+            val inputHeight = window.window?.decorView?.height ?: 0
+            val reservedHeight = physicalCandidateTotalReservedHeightPx()
+            val contentTop = (inputHeight - reservedHeight).coerceAtLeast(0)
+            outInsets?.contentTopInsets = contentTop
+            outInsets?.visibleTopInsets = contentTop
+            outInsets?.touchableInsets = Insets.TOUCHABLE_INSETS_CONTENT
+        } else if (isKeyboardFloatingMode == true) {
             val inputHeight = window.window?.decorView?.height ?: 0
             outInsets?.contentTopInsets = inputHeight
             outInsets?.visibleTopInsets = inputHeight
             outInsets?.touchableInsets = Insets.TOUCHABLE_INSETS_CONTENT
         }
+    }
+
+    private fun physicalCandidateSpaceHeightPx(): Int {
+        return (PHYSICAL_CANDIDATE_SPACE_HEIGHT_DP * resources.displayMetrics.density)
+            .roundToInt()
+    }
+
+    private fun resolvePhysicalCandidateNavigationBarBottomInsetPx(): Int {
+        val decorView = window.window?.decorView
+        val rootInsets = decorView?.let(ViewCompat::getRootWindowInsets)
+        val navigationBarBottom = rootInsets
+            ?.getInsets(WindowInsetsCompat.Type.navigationBars())
+            ?.bottom
+        return navigationBarBottom
+            ?: physicalCandidateNavigationBarBottomInsetPx.takeIf { it > 0 }
+            ?: systemBottomInset.coerceAtLeast(0)
+    }
+
+    private fun physicalCandidateTotalReservedHeightPx(): Int {
+        if (!isPhysicalCandidateSpaceReserved) return 0
+        return physicalCandidateBarHeightPx + physicalCandidateNavigationBarBottomInsetPx
+    }
+
+    private fun setPhysicalCandidateSpaceReserved(reserved: Boolean) {
+        val heightPx = physicalCandidateSpaceHeightPx()
+        val navigationBarBottomInsetPx = resolvePhysicalCandidateNavigationBarBottomInsetPx()
+        val stateChanged = isPhysicalCandidateSpaceReserved != reserved
+        val metricsChanged = physicalCandidateBarHeightPx != heightPx ||
+                physicalCandidateNavigationBarBottomInsetPx != navigationBarBottomInsetPx
+        if (!stateChanged && !metricsChanged) return
+
+        isPhysicalCandidateSpaceReserved = reserved
+        physicalCandidateBarHeightPx = heightPx
+        physicalCandidateNavigationBarBottomInsetPx = navigationBarBottomInsetPx
+
+        physicalCandidateSpaceReservationView?.let { reservationView ->
+            reservationView.layoutParams =
+                (reservationView.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                    height = heightPx + navigationBarBottomInsetPx
+                } ?: FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    heightPx + navigationBarBottomInsetPx,
+                    Gravity.BOTTOM
+                )
+            reservationView.isVisible = reserved
+        }
+        physicalCandidateBarView?.let { candidateBarView ->
+            candidateBarView.layoutParams =
+                (candidateBarView.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                    height = heightPx
+                    bottomMargin = navigationBarBottomInsetPx
+                } ?: FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    heightPx,
+                    Gravity.BOTTOM
+                ).apply {
+                    bottomMargin = navigationBarBottomInsetPx
+                }
+        }
+        if (stateChanged || reserved) {
+            physicalCandidateSpaceReservationView?.requestLayout()
+            physicalCandidateBarView?.requestLayout()
+            keyboardContainer?.requestLayout()
+            window.window?.decorView?.requestLayout()
+        }
+    }
+
+    private fun refreshPhysicalCandidateSpaceInsets() {
+        setPhysicalCandidateSpaceReserved(reserved = isPhysicalCandidateSpaceReserved)
     }
 
     private fun shouldApplyImeWindowBlur(): Boolean {
@@ -4524,14 +4584,11 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
     override fun onUpdateCursorAnchorInfo(cursorAnchorInfo: CursorAnchorInfo?) {
         super.onUpdateCursorAnchorInfo(cursorAnchorInfo)
 
-        Timber.d("onUpdateCursorAnchorInfo start: [${cursorAnchorInfo == null}] [${floatingCandidateWindow == null}]")
+        Timber.d("onUpdateCursorAnchorInfo start: [${cursorAnchorInfo == null}]")
         val insertString = inputString.value
         if (cursorAnchorInfo == null || insertString.isEmpty()) {
             return
         }
-        ensurePhysicalKeyboardPopupWindows()
-        if (floatingCandidateWindow == null) return
-
         val matrix: Matrix = cursorAnchorInfo.matrix
         // カーソルのローカル座標を取得
         val cursorX = cursorAnchorInfo.insertionMarkerHorizontal
@@ -4586,6 +4643,9 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        window.window?.decorView?.post {
+            refreshPhysicalCandidateSpaceInsets()
+        }
         clearZeroQueryAllState(refresh = false)
         collapseShortcutEntryExpansion()
         when (newConfig.orientation) {
@@ -4687,20 +4747,8 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
     }
 
     private fun ensurePhysicalKeyboardPopupWindows() {
-        if (floatingCandidateWindow == null) {
-            val popupContentView = layoutInflater.inflate(R.layout.floating_candidate_layout, null)
-            val recyclerView =
-                popupContentView.findViewById<RecyclerView>(R.id.floating_candidate_recycler_view)
-            recyclerView.adapter = listAdapter
-            recyclerView.layoutManager = LinearLayoutManager(this)
-            floatingCandidateWindow = PopupWindow(
-                popupContentView,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT
-            ).apply {
-                isOutsideTouchable = false
-            }
-        }
+        floatingCandidateWindow?.dismiss()
+        floatingCandidateWindow = null
 
         val showFloatingDock =
             appPreference.physical_keyboard_floating_dock_visibility_preference
@@ -5014,7 +5062,47 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         }
 
         mainLayoutBinding = MainLayoutBinding.inflate(LayoutInflater.from(ctx))
-
+        val physicalCandidateHeightPx = physicalCandidateSpaceHeightPx()
+        val navigationBarBottomInsetPx = resolvePhysicalCandidateNavigationBarBottomInsetPx()
+        physicalCandidateBarHeightPx = physicalCandidateHeightPx
+        physicalCandidateNavigationBarBottomInsetPx = navigationBarBottomInsetPx
+        physicalCandidateBarView = LayoutInflater.from(ctx).inflate(
+            R.layout.physical_keyboard_candidate_bar,
+            null,
+            false
+        ).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                physicalCandidateHeightPx,
+                Gravity.BOTTOM
+            ).apply {
+                bottomMargin = navigationBarBottomInsetPx
+            }
+        }
+        physicalCandidateRecyclerView = physicalCandidateBarView
+            ?.findViewById<RecyclerView>(R.id.physical_keyboard_candidate_recycler_view)
+            ?.apply {
+                layoutManager = LinearLayoutManager(
+                    ctx,
+                    LinearLayoutManager.HORIZONTAL,
+                    false
+                )
+                adapter = physicalKeyboardCandidateBarAdapter
+            }
+        physicalCandidateNextPageView = physicalCandidateBarView
+            ?.findViewById<TextView>(R.id.physical_keyboard_candidate_next_page)
+            ?.apply {
+                setOnClickListener { goToNextPageForFloatingCandidate() }
+            }
+        physicalCandidateSpaceReservationView = FrameLayout(ctx).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                physicalCandidateHeightPx + navigationBarBottomInsetPx,
+                Gravity.BOTTOM
+            )
+            isVisible = isPhysicalCandidateSpaceReserved
+            physicalCandidateBarView?.let(::addView)
+        }
         releaseFloatingKeyboardBackgroundVideoPlayer()
         floatingKeyboardBinding = FloatingKeyboardLayoutBinding.inflate(LayoutInflater.from(ctx))
         // floatingKeyboardBinding を作り直したので configureQwertyView guard をリセット。
@@ -5086,6 +5174,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
             container.removeAllViews()
             mainLayoutBinding?.root?.let { newRootView ->
                 container.addView(newRootView)
+                physicalCandidateSpaceReservationView?.let(container::addView)
                 mainLayoutBinding?.let { mainView ->
                     when (keyboardThemeMode) {
                         "default" -> {
@@ -5195,6 +5284,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
 
                         var updated = systemBottomInset != insets.bottom
                         systemBottomInset = insets.bottom
+                        refreshPhysicalCandidateSpaceInsets()
 
                         if (updated && isKeyboardFloatingMode != true) {
                             mainLayoutBinding?.let { mainView ->
@@ -5858,7 +5948,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         }
         if (isBunsetsuCursorMoveSessionActive()) {
             restoreRawInputFromBunsetsuSession()
-            listAdapter.updateHighlightPosition(RecyclerView.NO_POSITION)
+            updateFloatingCandidateHighlight(RecyclerView.NO_POSITION)
             currentHighlightIndex = RecyclerView.NO_POSITION
             return true
         }
@@ -5879,7 +5969,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         currentHighlightIndex = RecyclerView.NO_POSITION
         suggestionClickNum = 0
         isFirstClickHasStringTail = false
-        listAdapter.updateHighlightPosition(RecyclerView.NO_POSITION)
+        updateFloatingCandidateHighlight(RecyclerView.NO_POSITION)
         suggestionAdapter?.updateHighlightPosition(RecyclerView.NO_POSITION)
         setSuggestionAdaptersOnMain(emptyList())
         updateSuggestionsForFloatingCandidate(emptyList())
@@ -6335,6 +6425,74 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         }
     }
 
+    private fun commitPhysicalKeyboardCandidate(suggestion: CandidateItem) {
+        val tail = FloatingCandidateTailResolver.resolveTail(
+            originalInput = inputString.value,
+            selectedCandidateLength = suggestion.length.toInt()
+        )
+        stringInTail.set(tail)
+        if (tail.isNotEmpty()) {
+            commitText(suggestion.word, 1)
+            finishComposingText()
+            updateSuggestionsForFloatingCandidate(emptyList())
+            _inputString.update { tail }
+            updateFloatingCandidateHighlight(RecyclerView.NO_POSITION)
+            currentHighlightIndex = RecyclerView.NO_POSITION
+            scope.launch {
+                delay(64)
+                floatingCandidateNextItem(insertString = tail)
+            }
+        } else {
+            if (suggestion.word.isNotBlank()) {
+                rememberZeroQueryKeyAfterCommit(suggestion.word)
+            }
+            commitText(suggestion.word, 1)
+            finishComposingText()
+            updateSuggestionsForFloatingCandidate(emptyList())
+            _inputString.update { "" }
+            updateFloatingCandidateHighlight(RecyclerView.NO_POSITION)
+            currentHighlightIndex = RecyclerView.NO_POSITION
+            consumePendingZeroQueryAfterCommit()
+        }
+    }
+
+    private fun updateFloatingCandidateHighlight(position: Int) {
+        listAdapter.updateHighlightPosition(position)
+        if (!::physicalKeyboardCandidateBarAdapter.isInitialized) return
+
+        physicalKeyboardCandidateBarAdapter.updateHighlightPosition(position)
+        if (position in physicalKeyboardCandidateBarAdapter.currentList.indices) {
+            physicalCandidateRecyclerView?.post {
+                physicalCandidateRecyclerView?.smoothScrollToPosition(position)
+            }
+        }
+    }
+
+    private fun updateFloatingDockForCandidateBar() {
+        val shouldShowDock =
+            physicalKeyboardEnable.replayCache.firstOrNull() == true &&
+                    fullSuggestionsList.isEmpty() &&
+                    appPreference.physical_keyboard_floating_dock_visibility_preference
+        if (!shouldShowDock) {
+            floatingDockWindow?.dismiss()
+            return
+        }
+
+        ensurePhysicalKeyboardPopupWindows()
+        floatingDockWindow?.let { dockWindow ->
+            if (!dockWindow.isShowing) {
+                showPopupWindowSafely(
+                    popupWindow = dockWindow,
+                    anchorView = mainLayoutBinding?.root,
+                    gravity = Gravity.BOTTOM,
+                    x = 0,
+                    y = 0,
+                    source = "updateFloatingDockForCandidateBar"
+                )
+            }
+        }
+    }
+
     private fun floatingCandidateNextItem(insertString: String) {
         Timber.d("floatingCandidateNextItem called. Current highlight: $currentHighlightIndex ${stringInTail.get()}")
         if (listAdapter.currentList.isEmpty()) return
@@ -6368,7 +6526,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
             } else {
                 (currentHighlightIndex + 1) % suggestionCount
             }
-            listAdapter.updateHighlightPosition(currentHighlightIndex)
+            updateFloatingCandidateHighlight(currentHighlightIndex)
             displayComposingTextInHardwareKeyboardConnected(insertString)
             Timber.d("floatingCandidateNextItem: ${listAdapter.getHighlightedItem()} ${inputString.value} $stringInTail")
         }
@@ -6393,7 +6551,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
             } else {
                 currentHighlightIndex - 1
             }
-            listAdapter.updateHighlightPosition(currentHighlightIndex)
+            updateFloatingCandidateHighlight(currentHighlightIndex)
             displayComposingTextInHardwareKeyboardConnected(insertString = insertString)
             Timber.d("floatingCandidatePreviousItem: ${listAdapter.getHighlightedItem()}")
         }
@@ -6438,7 +6596,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
                 commitText(selectedSuggestion.word, 1)
                 updateSuggestionsForFloatingCandidate(emptyList())
                 _inputString.update { subString }
-                listAdapter.updateHighlightPosition(-1)
+                updateFloatingCandidateHighlight(RecyclerView.NO_POSITION)
                 currentHighlightIndex = -1
                 scope.launch {
                     delay(64)
@@ -6451,7 +6609,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
                 commitText(selectedSuggestion.word, 1)
                 updateSuggestionsForFloatingCandidate(emptyList())
                 _inputString.update { "" }
-                listAdapter.updateHighlightPosition(-1)
+                updateFloatingCandidateHighlight(RecyclerView.NO_POSITION)
                 currentHighlightIndex = -1
                 consumePendingZeroQueryAfterCommit()
             }
@@ -7763,6 +7921,10 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         }
         Timber.d("updateSuggestionsForFloatingCandidate: $suggestions")
         fullSuggestionsList = suggestions
+        setPhysicalCandidateSpaceReserved(
+            reserved = physicalKeyboardEnable.replayCache.firstOrNull() == true &&
+                    fullSuggestionsList.isNotEmpty()
+        )
         highlightedAbsoluteIndex?.let { absoluteIndex ->
             if (suggestions.isNotEmpty() && absoluteIndex != RecyclerView.NO_POSITION) {
                 val safeIndex = absoluteIndex.coerceIn(0, suggestions.lastIndex)
@@ -7782,9 +7944,14 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         if (fullSuggestionsList.isEmpty()) {
             Timber.d("onUpdateCursorAnchorInfo displayCurrentPage empty called")
             listAdapter.submitList(emptyList())
+            physicalKeyboardCandidateBarAdapter.submitList(emptyList())
+            physicalCandidateNextPageView?.isVisible = false
             floatingCandidateWindow?.dismiss()
+            updateFloatingDockForCandidateBar()
             return
         }
+
+        floatingDockWindow?.dismiss()
 
         val startIndex = currentPage * PAGE_SIZE
         val endIndex = (startIndex + PAGE_SIZE).coerceAtMost(fullSuggestionsList.size)
@@ -7798,8 +7965,15 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
             val pagerLabel = "▶ (${currentPage + 1}/$totalPages)"
             itemsToShow.add(CandidateItem(word = pagerLabel, length = (1).toUByte()))
         }
+        physicalCandidateNextPageView?.apply {
+            isVisible = totalPages > 1
+            text = "${currentPage + 1}/$totalPages  ›"
+        }
+        physicalKeyboardCandidateBarAdapter.submitList(suggestionsForPage) {
+            updateFloatingCandidateHighlight(currentHighlightIndex)
+        }
         listAdapter.submitList(itemsToShow) {
-            listAdapter.updateHighlightPosition(currentHighlightIndex)
+            updateFloatingCandidateHighlight(currentHighlightIndex)
             Timber.d("floatingCandidateNextItem (after update): ${listAdapter.getHighlightedItem()} [$itemsToShow]")
         }
     }
@@ -14308,7 +14482,13 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         launch {
             physicalKeyboardEnable.collect { isPhysicalKeyboardEnable ->
                 Timber.d("physicalKeyboardEnable: $isPhysicalKeyboardEnable")
+                val isPhysicalKeyboardModeStarting =
+                    isPhysicalKeyboardEnable && !wasPhysicalKeyboardEnabledForCandidateSpace
+                wasPhysicalKeyboardEnabledForCandidateSpace = isPhysicalKeyboardEnable
                 if (isPhysicalKeyboardEnable) {
+                    if (isPhysicalKeyboardModeStarting) {
+                        setPhysicalCandidateSpaceReserved(reserved = false)
+                    }
                     disableKeyboardLayoutEditMode()
                     ensurePhysicalKeyboardPopupWindows()
                     updateImeWindowBlurForCurrentMode()
@@ -14324,31 +14504,21 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
                     releaseFloatingKeyboardBackgroundVideoPlayer()
                     (mainView.root.layoutParams as? FrameLayout.LayoutParams)?.let { params ->
                         params.width = ViewGroup.LayoutParams.MATCH_PARENT
-                        params.height = getScreenHeight(this@IMEService)
+                        params.height = 0
                         mainView.root.layoutParams = params
                     }
                     prepareNormalRootAsFloatingHost(mainView)
                     requestCursorUpdates(
                         InputConnection.CURSOR_UPDATE_IMMEDIATE or InputConnection.CURSOR_UPDATE_MONITOR
                     )
-                    floatingDockWindow?.apply {
-                        if (!this.isShowing) {
-                            showPopupWindowSafely(
-                                popupWindow = this,
-                                anchorView = mainView.root,
-                                gravity = Gravity.BOTTOM,
-                                x = 0,
-                                y = 0,
-                                source = "physicalKeyboardEnable.collect"
-                            )
-                        }
-                    }
+                    updateFloatingDockForCandidateBar()
 
-                    listAdapter.updateHighlightPosition(-1)
+                    updateFloatingCandidateHighlight(RecyclerView.NO_POSITION)
                     currentHighlightIndex = -1
                     isHenkan.set(false)
                     henkanPressedWithBunsetsuDetect = false
                 } else {
+                    setPhysicalCandidateSpaceReserved(reserved = false)
                     requestCursorUpdates(0)
                     floatingCandidateWindow?.dismiss()
                     floatingDockWindow?.dismiss()
@@ -14880,7 +15050,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         filteredCandidateList = emptyList()
         if (physicalKeyboardEnable.replayCache.isNotEmpty() && physicalKeyboardEnable.replayCache.first()) {
             updateSuggestionsForFloatingCandidate(emptyList())
-            listAdapter.updateHighlightPosition(-1)
+            updateFloatingCandidateHighlight(RecyclerView.NO_POSITION)
             currentHighlightIndex = -1
         }
         scope.launch {
@@ -15762,7 +15932,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
             initialCursorXPosition = 0
             if (physicalKeyboardEnable.replayCache.isNotEmpty() && physicalKeyboardEnable.replayCache.first()) {
                 updateSuggestionsForFloatingCandidate(emptyList())
-                listAdapter.updateHighlightPosition(-1)
+                updateFloatingCandidateHighlight(RecyclerView.NO_POSITION)
                 currentHighlightIndex = -1
             }
             if (isKeyboardFloatingMode == true) {
@@ -20392,7 +20562,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         updateSuggestionsForFloatingCandidate(emptyList())
         suggestionAdapter?.updateHighlightPosition(RecyclerView.NO_POSITION)
         suggestionAdapterFull?.updateHighlightPosition(RecyclerView.NO_POSITION)
-        listAdapter.updateHighlightPosition(RecyclerView.NO_POSITION)
+        updateFloatingCandidateHighlight(RecyclerView.NO_POSITION)
         scope.launch {
             _suggestionFlag.emit(CandidateShowFlag.Idle)
         }

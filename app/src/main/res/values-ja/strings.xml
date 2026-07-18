@@ -1417,4 +1417,5 @@
     <string name="conversion_beam_width_category_title">変換探索</string>
     <string name="conversion_beam_width_preference_title">変換探索幅</string>
     <string name="conversion_beam_width_preference_summary">かな漢字変換の探索中に保持するラティスノード数を設定します。デフォルトは20です。</string>
+    <string name="physical_keyboard_candidate_next_page">次の候補ページを表示</string>
 </resources>

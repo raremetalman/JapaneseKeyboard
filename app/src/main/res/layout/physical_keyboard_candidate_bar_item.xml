@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/physical_keyboard_candidate_text"
+    android:layout_width="wrap_content"
+    android:layout_height="match_parent"
+    android:background="@drawable/suggestion_item_background"
+    android:gravity="center"
+    android:minWidth="48dp"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:singleLine="true"
+    android:textColor="@color/keyboard_icon_color"
+    android:textSize="17sp" />
