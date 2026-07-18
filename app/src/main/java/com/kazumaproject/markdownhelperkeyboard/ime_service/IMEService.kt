@@ -255,6 +255,12 @@ import com.kazumaproject.markdownhelperkeyboard.physical_keyboard.shortcut.Physi
 import com.kazumaproject.markdownhelperkeyboard.physical_keyboard.shortcut.PhysicalKeyboardShortcutContext
 import com.kazumaproject.markdownhelperkeyboard.physical_keyboard.shortcut.PhysicalShortcutMatcher
 import com.kazumaproject.markdownhelperkeyboard.physical_keyboard.shortcut.database.PhysicalKeyboardShortcutItem
+import com.kazumaproject.markdownhelperkeyboard.physical_keyboard.windows.LegacyPhysicalShortcutCompatibilityPolicy
+import com.kazumaproject.markdownhelperkeyboard.physical_keyboard.windows.WindowsImePhysicalInputState
+import com.kazumaproject.markdownhelperkeyboard.physical_keyboard.windows.WindowsImePhysicalKeyAction
+import com.kazumaproject.markdownhelperkeyboard.physical_keyboard.windows.WindowsImePhysicalKeyContext
+import com.kazumaproject.markdownhelperkeyboard.physical_keyboard.windows.WindowsImePhysicalKeyDispatchDecision
+import com.kazumaproject.markdownhelperkeyboard.physical_keyboard.windows.WindowsImePhysicalKeyDispatcher
 import com.kazumaproject.markdownhelperkeyboard.repository.CandidateOrderOverrideRepository
 import com.kazumaproject.markdownhelperkeyboard.repository.ClickedSymbolRepository
 import com.kazumaproject.markdownhelperkeyboard.repository.ClipboardHistoryRepository
@@ -406,6 +412,17 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         val originalReading: String,
         val committedText: String = ""
     )
+
+    private data class ConsumedPhysicalKey(
+        val deviceId: Int,
+        val scanCode: Int,
+        val keyCode: Int
+    )
+
+    private enum class WindowsPhysicalCharacterMode {
+        HIRAGANA,
+        FULL_KATAKANA
+    }
 
     private sealed class SelectedTextGemmaAction {
         object Translate : SelectedTextGemmaAction()
@@ -1652,6 +1669,10 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
     private var physicalKeyboardInputMode: PhysicalKeyboardInputMode =
         PhysicalKeyboardInputMode.ROMAJI
     private var physicalKeyboardShortcuts: List<PhysicalKeyboardShortcutItem> = emptyList()
+    private var windowsPhysicalCharacterMode: WindowsPhysicalCharacterMode =
+        WindowsPhysicalCharacterMode.HIRAGANA
+    private var windowsMuhenkanCycleIndex: Int = 0
+    private val consumedPhysicalKeys = mutableSetOf<ConsumedPhysicalKey>()
 
     private var isDefaultRomajiHenkanMap = false
 
@@ -4163,6 +4184,7 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
         Timber.d("onUpdate onFinishInputView")
+        consumedPhysicalKeys.clear()
         setPhysicalCandidateSpaceReserved(reserved = false)
         clearZeroQueryAllState(refresh = false)
         stopAllOngoingKeyLongPresses()
@@ -5448,19 +5470,67 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         mainLayoutBinding?.let { mainView ->
-            event?.let { e ->
+            event?.takeIf(::isPhysicalKeyboardKeyEvent)?.let { e ->
                 logPhysicalKeyEventForDebug(keyCode, e)
                 val insertString = inputString.value
                 val suggestions = listAdapter.currentList
-                if (handlePhysicalKeyboardShortcut(
+                val userShortcutConsumed = handlePhysicalKeyboardShortcut(
                         keyCode,
                         e,
                         mainView,
                         insertString,
                         suggestions
                     )
-                ) {
-                    return true
+                val context = createWindowsImePhysicalKeyContext(keyCode, e)
+                when (val decision = WindowsImePhysicalKeyDispatcher.resolve(
+                    context = context,
+                    userShortcutConsumed = userShortcutConsumed
+                )) {
+                    WindowsImePhysicalKeyDispatchDecision.UserShortcutConsumed -> {
+                        rememberConsumedPhysicalKey(keyCode, e)
+                        logWindowsPhysicalKeyDecision(
+                            context = context,
+                            action = "UserShortcut",
+                            consumed = true
+                        )
+                        return true
+                    }
+
+                    WindowsImePhysicalKeyDispatchDecision.ContinueExistingHandling -> {
+                        logWindowsPhysicalKeyDecision(
+                            context = context,
+                            action = WindowsImePhysicalKeyAction.PassThrough.javaClass.simpleName,
+                            consumed = false
+                        )
+                    }
+
+                    WindowsImePhysicalKeyDispatchDecision.ForwardToApplication -> {
+                        logWindowsPhysicalKeyDecision(
+                            context = context,
+                            action = WindowsImePhysicalKeyAction.ForwardToApplication.javaClass.simpleName,
+                            consumed = false
+                        )
+                        return super.onKeyDown(keyCode, e)
+                    }
+
+                    is WindowsImePhysicalKeyDispatchDecision.Execute -> {
+                        prepareWindowsCharacterConversionForKey(keyCode)
+                        val consumed = executeWindowsImePhysicalKeyAction(
+                            action = decision.action,
+                            mainView = mainView,
+                            insertString = insertString,
+                            suggestions = suggestions
+                        )
+                        logWindowsPhysicalKeyDecision(
+                            context = context,
+                            action = decision.action.javaClass.simpleName,
+                            consumed = consumed
+                        )
+                        if (consumed) {
+                            rememberConsumedPhysicalKey(keyCode, e)
+                            return true
+                        }
+                    }
                 }
             }
 
@@ -5683,6 +5753,243 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
         }
     }
 
+    private fun createWindowsImePhysicalKeyContext(
+        keyCode: Int,
+        event: KeyEvent
+    ): WindowsImePhysicalKeyContext {
+        val inputState = when {
+            isBunsetsuCursorMoveSessionActive() ->
+                WindowsImePhysicalInputState.BUNSETSU_CONVERSION
+
+            isHenkan.get() -> WindowsImePhysicalInputState.CONVERSION
+            inputString.value.isNotEmpty() -> WindowsImePhysicalInputState.COMPOSITION
+            else -> WindowsImePhysicalInputState.IDLE
+        }
+        val focusedBunsetsu = bunsetsuConversionSession?.let { session ->
+            session.segments.getOrNull(session.focusedIndex)
+        }
+        val candidateCount = if (inputState == WindowsImePhysicalInputState.BUNSETSU_CONVERSION) {
+            focusedBunsetsu?.candidates?.size ?: 0
+        } else {
+            fullSuggestionsList.size
+        }
+        val selectedCandidateIndex = if (
+            inputState == WindowsImePhysicalInputState.BUNSETSU_CONVERSION
+        ) {
+            focusedBunsetsu?.selectedIndex ?: RecyclerView.NO_POSITION
+        } else if (currentHighlightIndex == RecyclerView.NO_POSITION) {
+            RecyclerView.NO_POSITION
+        } else {
+            currentPage * PAGE_SIZE + currentHighlightIndex
+        }
+        return WindowsImePhysicalKeyContext(
+            keyCode = keyCode,
+            scanCode = event.scanCode,
+            ctrl = event.isCtrlPressed,
+            shift = event.isShiftPressed,
+            alt = event.isAltPressed,
+            meta = event.isMetaPressed,
+            repeatCount = event.repeatCount,
+            inputState = inputState,
+            physicalInputMode = physicalKeyboardInputMode,
+            japaneseInputEnabled = currentInputModeForSession == InputMode.ModeJapanese,
+            candidateCount = candidateCount,
+            selectedCandidateIndex = selectedCandidateIndex,
+            canReconvert = shouldShowReconversionButton(),
+            isPhysicalKeyboardEvent = true
+        )
+    }
+
+    private fun prepareWindowsCharacterConversionForKey(keyCode: Int) {
+        if (keyCode == KeyEvent.KEYCODE_MUHENKAN || isFunctionKeyConversionKeyCode(keyCode)) {
+            return
+        }
+        windowsMuhenkanCycleIndex = 0
+        clearFunctionKeyConversionSource()
+    }
+
+    private fun executeWindowsImePhysicalKeyAction(
+        action: WindowsImePhysicalKeyAction,
+        mainView: MainLayoutBinding,
+        insertString: String,
+        suggestions: List<CandidateItem>
+    ): Boolean {
+        windowsActionAsExistingShortcut(action)?.let { existingAction ->
+            return executePhysicalKeyboardShortcutAction(
+                action = existingAction,
+                mainView = mainView,
+                insertString = insertString,
+                suggestions = suggestions
+            )
+        }
+        return when (action) {
+            WindowsImePhysicalKeyAction.PassThrough,
+            WindowsImePhysicalKeyAction.ForwardToApplication -> false
+
+            WindowsImePhysicalKeyAction.Consume -> true
+            WindowsImePhysicalKeyAction.ToggleJapaneseInput -> {
+                commitPhysicalCompositionBeforeModeChange()
+                if (currentInputModeForSession != InputMode.ModeJapanese) {
+                    windowsPhysicalCharacterMode = WindowsPhysicalCharacterMode.HIRAGANA
+                }
+                toggleJapaneseEnglishMode(mainView)
+            }
+
+            WindowsImePhysicalKeyAction.SetHiraganaMode -> {
+                commitPhysicalCompositionBeforeModeChange()
+                windowsPhysicalCharacterMode = WindowsPhysicalCharacterMode.HIRAGANA
+                switchToHiraganaMode(mainView)
+            }
+
+            WindowsImePhysicalKeyAction.SetFullKatakanaMode -> {
+                commitPhysicalCompositionBeforeModeChange()
+                windowsPhysicalCharacterMode = WindowsPhysicalCharacterMode.FULL_KATAKANA
+                switchToHiraganaMode(mainView)
+                showFloatingModeSwitchView("カ")
+                true
+            }
+
+            WindowsImePhysicalKeyAction.ToggleRomajiKana ->
+                toggleWindowsPhysicalInputMode()
+
+            WindowsImePhysicalKeyAction.CycleCompositionCharacterType ->
+                cycleWindowsCompositionCharacterType(insertString)
+
+            WindowsImePhysicalKeyAction.SelectNextPage -> {
+                if (isBunsetsuCursorMoveSessionActive()) {
+                    cycleFocusedBunsetsuCandidate(delta = PAGE_SIZE)
+                } else {
+                    goToNextPageForFloatingCandidate()
+                    scope.launch {
+                        delay(LONG_DELAY_TIME)
+                        displayComposingTextInHardwareKeyboardConnected(insertString)
+                    }
+                }
+                true
+            }
+
+            WindowsImePhysicalKeyAction.SelectPreviousPage -> {
+                if (isBunsetsuCursorMoveSessionActive()) {
+                    cycleFocusedBunsetsuCandidate(delta = -PAGE_SIZE)
+                } else {
+                    goToPreviousPageForFloatingCandidate()
+                    scope.launch {
+                        delay(LONG_DELAY_TIME)
+                        displayComposingTextInHardwareKeyboardConnected(insertString)
+                    }
+                }
+                true
+            }
+
+            is WindowsImePhysicalKeyAction.SelectCandidateIndex -> {
+                val pageStart = currentPage * PAGE_SIZE
+                fullSuggestionsList.getOrNull(pageStart + action.index)?.let {
+                    commitPhysicalKeyboardCandidate(it)
+                }
+                true
+            }
+
+            WindowsImePhysicalKeyAction.RevertComposition -> {
+                revertWindowsPhysicalComposition()
+                true
+            }
+
+            WindowsImePhysicalKeyAction.ReconvertSelection -> {
+                performPendingReconversion()
+                true
+            }
+
+            WindowsImePhysicalKeyAction.StartConversion,
+            WindowsImePhysicalKeyAction.SelectNextCandidate,
+            WindowsImePhysicalKeyAction.SelectPreviousCandidate,
+            WindowsImePhysicalKeyAction.Commit,
+            WindowsImePhysicalKeyAction.CancelConversion,
+            WindowsImePhysicalKeyAction.ConvertToHiragana,
+            WindowsImePhysicalKeyAction.ConvertToFullKatakana,
+            WindowsImePhysicalKeyAction.ConvertToHalfKatakana,
+            WindowsImePhysicalKeyAction.ConvertToFullWidthAlphanumeric,
+            WindowsImePhysicalKeyAction.ConvertToHalfWidthAlphanumeric -> false
+        }
+    }
+
+    private fun windowsActionAsExistingShortcut(
+        action: WindowsImePhysicalKeyAction
+    ): PhysicalKeyboardShortcutAction? = when (action) {
+        WindowsImePhysicalKeyAction.StartConversion -> PhysicalKeyboardShortcutAction.CONVERT
+        WindowsImePhysicalKeyAction.SelectNextCandidate -> PhysicalKeyboardShortcutAction.CONVERT_NEXT
+        WindowsImePhysicalKeyAction.SelectPreviousCandidate -> PhysicalKeyboardShortcutAction.CONVERT_PREV
+        WindowsImePhysicalKeyAction.Commit -> PhysicalKeyboardShortcutAction.COMMIT
+        WindowsImePhysicalKeyAction.CancelConversion -> PhysicalKeyboardShortcutAction.CANCEL
+        WindowsImePhysicalKeyAction.ConvertToHiragana ->
+            PhysicalKeyboardShortcutAction.CONVERT_TO_HIRAGANA
+
+        WindowsImePhysicalKeyAction.ConvertToFullKatakana ->
+            PhysicalKeyboardShortcutAction.CONVERT_TO_FULL_KATAKANA
+
+        WindowsImePhysicalKeyAction.ConvertToHalfKatakana ->
+            PhysicalKeyboardShortcutAction.CONVERT_TO_HALF_WIDTH
+
+        WindowsImePhysicalKeyAction.ConvertToFullWidthAlphanumeric ->
+            PhysicalKeyboardShortcutAction.CONVERT_TO_FULL_ALPHANUMERIC
+
+        WindowsImePhysicalKeyAction.ConvertToHalfWidthAlphanumeric ->
+            PhysicalKeyboardShortcutAction.CONVERT_TO_HALF_ALPHANUMERIC
+
+        else -> null
+    }
+
+    private fun commitPhysicalCompositionBeforeModeChange() {
+        val committedBunsetsu = commitBunsetsuConversionSession()
+        if (committedBunsetsu || inputString.value.isNotEmpty()) {
+            finishComposingText()
+        }
+        clearDirectCommitCompositionState("physical input mode change")
+        romajiConverter?.clear()
+        windowsMuhenkanCycleIndex = 0
+    }
+
+    private fun toggleWindowsPhysicalInputMode(): Boolean {
+        commitPhysicalCompositionBeforeModeChange()
+        physicalKeyboardInputMode = when (physicalKeyboardInputMode) {
+            PhysicalKeyboardInputMode.ROMAJI -> PhysicalKeyboardInputMode.KANA
+            PhysicalKeyboardInputMode.KANA -> PhysicalKeyboardInputMode.ROMAJI
+        }
+        appPreference.physical_keyboard_input_mode_preference =
+            physicalKeyboardInputMode.preferenceValue
+        showFloatingModeSwitchView(
+            when (physicalKeyboardInputMode) {
+                PhysicalKeyboardInputMode.ROMAJI -> "ローマ字"
+                PhysicalKeyboardInputMode.KANA -> "かな"
+            }
+        )
+        return true
+    }
+
+    private fun cycleWindowsCompositionCharacterType(insertString: String): Boolean {
+        if (insertString.isEmpty()) return false
+        val keyCode = when (windowsMuhenkanCycleIndex) {
+            0 -> KeyEvent.KEYCODE_F6
+            1 -> KeyEvent.KEYCODE_F7
+            else -> KeyEvent.KEYCODE_F8
+        }
+        val handled = handleConversionKeyFloating(keyCode, insertString)
+        windowsMuhenkanCycleIndex = (windowsMuhenkanCycleIndex + 1) % 3
+        return handled
+    }
+
+    private fun revertWindowsPhysicalComposition() {
+        beginBatchEdit()
+        try {
+            setComposingText("", 0)
+            finishComposingText()
+        } finally {
+            endBatchEdit()
+        }
+        clearDirectCommitCompositionState("physical escape composition")
+        romajiConverter?.clear()
+        windowsMuhenkanCycleIndex = 0
+    }
+
     private fun isFunctionKeyConversionKeyCode(keyCode: Int): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_F6,
@@ -5730,6 +6037,9 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
                     it.meta == event.isMetaPressed &&
                     (it.scanCode == null || it.scanCode == event.scanCode)
         } ?: return false
+        if (LegacyPhysicalShortcutCompatibilityPolicy.shouldDeferToWindowsMapping(shortcut)) {
+            return false
+        }
         val action = PhysicalKeyboardShortcutAction.fromId(shortcut.actionId) ?: return false
         return executePhysicalKeyboardShortcutAction(action, mainView, insertString, suggestions)
     }
@@ -6192,15 +6502,19 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
                             keyCode = keyCode,
                             isShift = e.isShiftPressed
                         )?.let { kana ->
-                            if (dispatchDirectTextIfNeeded(kana)) return@launch
-                            _inputString.update { KanaDakutenComposer.append("", kana) }
+                            val output = applyWindowsPhysicalCharacterMode(
+                                KanaDakutenComposer.append("", kana)
+                            )
+                            if (dispatchDirectTextIfNeeded(output)) return@launch
+                            _inputString.update { KanaDakutenComposer.append("", output) }
                         }
                     } else {
                         handlePhysicalRomajiOrUnicodeKey(keyCode, e)?.let { romajiResult ->
-                            Timber.d("KeyEvent Key Henkan: $e\n$insertString\n${romajiResult.first}")
-                            if (dispatchDirectTextIfNeeded(romajiResult.first)) return@launch
+                            val output = applyWindowsPhysicalCharacterMode(romajiResult.first)
+                            Timber.d("KeyEvent Key Henkan: $e\n$insertString\n$output")
+                            if (dispatchDirectTextIfNeeded(output)) return@launch
                             _inputString.update {
-                                romajiResult.first
+                                output
                             }
                         }
                     }
@@ -6213,17 +6527,24 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
                     isShift = e.isShiftPressed
                 )
                 kana?.let {
-                    if (dispatchDirectTextIfNeeded(it)) return true
-                    _inputString.update { current ->
-                        KanaDakutenComposer.append(current, it)
-                    }
+                    val output = applyWindowsPhysicalCharacterMode(
+                        KanaDakutenComposer.append(insertString.toHiragana(), it)
+                    )
+                    if (dispatchDirectTextIfNeeded(
+                            applyWindowsPhysicalCharacterMode(it)
+                        )
+                    ) return true
+                    _inputString.update { output }
                     return true
                 }
                 return super.onKeyDown(keyCode, e)
             }
 
-            val letterConverted = handlePhysicalRomajiOrUnicodeKey(keyCode, e)
+            val rawLetterConverted = handlePhysicalRomajiOrUnicodeKey(keyCode, e)
                 ?: return super.onKeyDown(keyCode, e)
+            val letterConverted = rawLetterConverted.copy(
+                first = applyWindowsPhysicalCharacterMode(rawLetterConverted.first)
+            )
             Timber.d("onKeyDown: $letterConverted")
             if (dispatchDirectTextIfNeeded(letterConverted.first)) return true
             if (insertString.isNotEmpty()) {
@@ -6245,6 +6566,13 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
 
     private fun hasPhysicalTextShortcutModifier(event: KeyEvent): Boolean {
         return event.isCtrlPressed || event.isAltPressed || event.isMetaPressed
+    }
+
+    private fun applyWindowsPhysicalCharacterMode(text: String): String {
+        return when (windowsPhysicalCharacterMode) {
+            WindowsPhysicalCharacterMode.HIRAGANA -> text
+            WindowsPhysicalCharacterMode.FULL_KATAKANA -> text.toZenkakuKatakana()
+        }
     }
 
     private fun handlePhysicalRomajiOrUnicodeKey(
@@ -6288,6 +6616,44 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
             event.isCtrlPressed,
             event.isMetaPressed,
             physicalKeyboardInputMode
+        )
+    }
+
+    private fun logWindowsPhysicalKeyDecision(
+        context: WindowsImePhysicalKeyContext,
+        action: String,
+        consumed: Boolean
+    ) {
+        if (!BuildConfig.DEBUG) return
+        Timber.d(
+            "WindowsImePhysicalKey keyCode=%d scanCode=%d modifiers=ctrl:%b,shift:%b,alt:%b,meta:%b state=%s action=%s consumed=%b",
+            context.keyCode,
+            context.scanCode,
+            context.ctrl,
+            context.shift,
+            context.alt,
+            context.meta,
+            context.inputState,
+            action,
+            consumed
+        )
+    }
+
+    private fun rememberConsumedPhysicalKey(keyCode: Int, event: KeyEvent) {
+        consumedPhysicalKeys += ConsumedPhysicalKey(
+            deviceId = event.deviceId,
+            scanCode = event.scanCode,
+            keyCode = keyCode
+        )
+    }
+
+    private fun consumeRememberedPhysicalKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        return consumedPhysicalKeys.remove(
+            ConsumedPhysicalKey(
+                deviceId = event.deviceId,
+                scanCode = event.scanCode,
+                keyCode = keyCode
+            )
         )
     }
 
@@ -6375,6 +6741,18 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        event?.takeIf(::isPhysicalKeyboardKeyEvent)?.let { physicalEvent ->
+            if (consumeRememberedPhysicalKeyUp(keyCode, physicalEvent)) {
+                if (BuildConfig.DEBUG) {
+                    Timber.d(
+                        "WindowsImePhysicalKey keyUp keyCode=%d scanCode=%d consumed=true",
+                        keyCode,
+                        physicalEvent.scanCode
+                    )
+                }
+                return true
+            }
+        }
         when (keyCode) {
             KeyEvent.KEYCODE_ENTER -> {
                 Timber.d("onKeyUp KEYCODE_ENTER: ${inputString.value} ${isHenkan.get()}")
@@ -24136,6 +24514,10 @@ class IMEService : InputMethodService(), LifecycleOwner, InputConnection,
 
             else -> KeySoundType.STANDARD
         }
+    }
+
+    private fun isPhysicalKeyboardKeyEvent(event: KeyEvent): Boolean {
+        return isDevicePhysicalKeyboard(event.device)
     }
 
     private fun isDevicePhysicalKeyboard(device: InputDevice?): Boolean {

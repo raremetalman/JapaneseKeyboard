@@ -1,0 +1,27 @@
+package com.kazumaproject.markdownhelperkeyboard.physical_keyboard.windows
+
+sealed class WindowsImePhysicalKeyAction {
+    object PassThrough : WindowsImePhysicalKeyAction()
+    object ForwardToApplication : WindowsImePhysicalKeyAction()
+    object Consume : WindowsImePhysicalKeyAction()
+    object ToggleJapaneseInput : WindowsImePhysicalKeyAction()
+    object SetHiraganaMode : WindowsImePhysicalKeyAction()
+    object SetFullKatakanaMode : WindowsImePhysicalKeyAction()
+    object ToggleRomajiKana : WindowsImePhysicalKeyAction()
+    object CycleCompositionCharacterType : WindowsImePhysicalKeyAction()
+    object StartConversion : WindowsImePhysicalKeyAction()
+    object SelectNextCandidate : WindowsImePhysicalKeyAction()
+    object SelectPreviousCandidate : WindowsImePhysicalKeyAction()
+    object SelectNextPage : WindowsImePhysicalKeyAction()
+    object SelectPreviousPage : WindowsImePhysicalKeyAction()
+    data class SelectCandidateIndex(val index: Int) : WindowsImePhysicalKeyAction()
+    object Commit : WindowsImePhysicalKeyAction()
+    object CancelConversion : WindowsImePhysicalKeyAction()
+    object RevertComposition : WindowsImePhysicalKeyAction()
+    object ReconvertSelection : WindowsImePhysicalKeyAction()
+    object ConvertToHiragana : WindowsImePhysicalKeyAction()
+    object ConvertToFullKatakana : WindowsImePhysicalKeyAction()
+    object ConvertToHalfKatakana : WindowsImePhysicalKeyAction()
+    object ConvertToFullWidthAlphanumeric : WindowsImePhysicalKeyAction()
+    object ConvertToHalfWidthAlphanumeric : WindowsImePhysicalKeyAction()
+}
