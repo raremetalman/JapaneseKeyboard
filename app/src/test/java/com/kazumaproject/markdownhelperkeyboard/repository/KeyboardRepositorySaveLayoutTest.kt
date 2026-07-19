@@ -234,13 +234,6 @@ class KeyboardRepositorySaveLayoutTest {
     }
 
     @Test
-    fun setCurrentLayoutUsageMode_number_isExclusive(): Unit = runBlocking {
-        repository.setCurrentLayoutUsageMode(8L, KeyboardLayoutUsageMode.Number)
-
-        verify(dao).setLayoutUsageModeExclusive(8L, KeyboardLayoutUsageMode.Number)
-    }
-
-    @Test
     fun saveLayout_specialKeyPersistsIconOverrideStringsWithoutDrawableResId(): Unit = runBlocking {
         whenever(dao.getMaxSortOrder()).thenReturn(0)
         whenever(dao.findLayoutByStableId(any())).thenReturn(null)

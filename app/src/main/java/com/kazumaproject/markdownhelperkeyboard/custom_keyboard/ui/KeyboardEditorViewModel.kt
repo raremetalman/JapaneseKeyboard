@@ -79,6 +79,13 @@ data class EditorUiState(
 
 data class LayoutTemplate(val nameResId: Int, val layout: KeyboardLayout)
 
+private data class EditorContentSnapshot(
+    val name: String,
+    val layout: KeyboardLayout,
+    val isRomaji: Boolean,
+    val isDirectMode: Boolean,
+)
+
 fun shouldShowKeyboardEditorStructuralControls(layout: KeyboardLayout): Boolean =
     keyboardEditorCapabilities(layout).showGridStructuralControls
 
@@ -91,6 +98,7 @@ class KeyboardEditorViewModel @Inject constructor(
     val uiState = _uiState.asStateFlow()
 
     private var currentEditingId: Long? = null
+    private var initialContentSnapshot: EditorContentSnapshot? = null
     private val placementSolver = FlexiblePlacementSolver()
     private val placementNavigator = InsertionTargetNavigator()
 
@@ -151,6 +159,7 @@ class KeyboardEditorViewModel @Inject constructor(
                     isDirectMode = loadedLayout.isDirectMode
                 )
             }
+            initialContentSnapshot = _uiState.value.toContentSnapshot()
         }
     }
 
@@ -172,6 +181,7 @@ class KeyboardEditorViewModel @Inject constructor(
                 isDirectMode = false
             )
         }
+        initialContentSnapshot = _uiState.value.toContentSnapshot()
     }
 
     fun saveLayout() {
@@ -209,6 +219,7 @@ class KeyboardEditorViewModel @Inject constructor(
                     Timber.e(e, "saveLayout failed for id=%s", idToSave)
                 }
                 .onSuccess {
+                    initialContentSnapshot = _uiState.value.toContentSnapshot()
                     _uiState.update { it.copy(navigateBack = true) }
                 }
         }
@@ -216,8 +227,14 @@ class KeyboardEditorViewModel @Inject constructor(
 
     fun onCancelEditing() {
         currentEditingId = null
+        initialContentSnapshot = null
         _uiState.value = EditorUiState()
     }
+
+    fun hasUnsavedChanges(): Boolean =
+        initialContentSnapshot?.let { it != _uiState.value.toContentSnapshot() } ?: false
+
+    fun isEditingExistingLayout(): Boolean = currentEditingId != null
 
     fun clearDuplicateNameError() {
         _uiState.update { it.copy(duplicateNameError = false) }
@@ -1494,17 +1511,9 @@ class KeyboardEditorViewModel @Inject constructor(
         _uiState.update { it.copy(isDirectMode = isDirectMode) }
     }
 
-    fun setCurrentLayoutUsageMode(layoutId: Long?, usageMode: KeyboardLayoutUsageMode) {
+    fun updateLayoutUsageMode(usageMode: KeyboardLayoutUsageMode) {
         _uiState.update { state ->
             state.copy(layout = state.layout.copy(usageMode = usageMode))
-        }
-        val existingLayoutId = layoutId ?: return
-        viewModelScope.launch {
-            runCatching {
-                repository.setCurrentLayoutUsageMode(existingLayoutId, usageMode)
-            }.onFailure { e ->
-                Timber.e(e, "setCurrentLayoutUsageMode failed layoutId=%s usageMode=%s", existingLayoutId, usageMode)
-            }
         }
     }
 
@@ -1621,3 +1630,10 @@ class KeyboardEditorViewModel @Inject constructor(
         return repository.importLayouts(layouts)
     }
 }
+
+private fun EditorUiState.toContentSnapshot() = EditorContentSnapshot(
+    name = name,
+    layout = layout,
+    isRomaji = isRomaji,
+    isDirectMode = isDirectMode,
+)

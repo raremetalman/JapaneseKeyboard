@@ -1419,4 +1419,10 @@
     <string name="conversion_beam_width_preference_title">変換探索幅</string>
     <string name="conversion_beam_width_preference_summary">かな漢字変換の探索中に保持するラティスノード数を設定します。デフォルトは20です。</string>
     <string name="physical_keyboard_candidate_next_page">次の候補ページを表示</string>
+    <string name="custom_keyboard_discard_changes_title">編集内容を破棄しますか？</string>
+    <string name="custom_keyboard_discard_changes_message">保存していない変更は失われます。</string>
+    <string name="custom_keyboard_discard">破棄</string>
+    <string name="custom_keyboard_overwrite_title">上書き保存しますか？</string>
+    <string name="custom_keyboard_overwrite_message">「%1$s」を上書き保存しますか？</string>
+    <string name="custom_keyboard_overwrite">上書き</string>
 </resources>

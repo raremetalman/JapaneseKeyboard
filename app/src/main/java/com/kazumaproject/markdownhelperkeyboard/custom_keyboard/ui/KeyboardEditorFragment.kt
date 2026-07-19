@@ -9,6 +9,7 @@ import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.MenuHost
 import androidx.core.view.MenuProvider
@@ -54,6 +55,9 @@ class KeyboardEditorFragment : Fragment(R.layout.fragment_keyboard_editor),
         _binding = FragmentKeyboardEditorBinding.bind(view)
         setupToolbarAndMenu()
         viewModel.start(args.layoutId)
+        requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner) {
+            requestEditorExit()
+        }
         setupUIListeners()
         observeViewModel()
     }
@@ -72,13 +76,12 @@ class KeyboardEditorFragment : Fragment(R.layout.fragment_keyboard_editor),
             override fun onMenuItemSelected(menuItem: MenuItem): Boolean {
                 return when (menuItem.itemId) {
                     android.R.id.home -> {
-                        findNavController().popBackStack()
-                        viewModel.onCancelEditing()
+                        requestEditorExit()
                         true
                     }
 
                     R.id.action_save -> {
-                        viewModel.saveLayout()
+                        requestSave()
                         true
                     }
 
@@ -112,7 +115,7 @@ class KeyboardEditorFragment : Fragment(R.layout.fragment_keyboard_editor),
                 KeyboardLayoutUsageMode.Normal
             }
             if (usageMode != viewModel.uiState.value.layout.usageMode) {
-                viewModel.setCurrentLayoutUsageMode(viewModel.uiState.value.layoutId, usageMode)
+                viewModel.updateLayoutUsageMode(usageMode)
             }
         }
         binding.switchRowColumnDeleteButtons.setOnCheckedChangeListener { _, isChecked ->
@@ -203,8 +206,11 @@ class KeyboardEditorFragment : Fragment(R.layout.fragment_keyboard_editor),
                     viewModel.uiState.collect { state ->
                         updateUi(state)
                         if (state.navigateBack) {
-                            findNavController().popBackStack()
-                            viewModel.onDoneNavigating()
+                            if (findNavController().popBackStack()) {
+                                viewModel.onCancelEditing()
+                            } else {
+                                viewModel.onDoneNavigating()
+                            }
                         }
                     }
                 }
@@ -227,6 +233,46 @@ class KeyboardEditorFragment : Fragment(R.layout.fragment_keyboard_editor),
             .setPositiveButton(android.R.string.ok) { dialog, _ ->
                 dialog.dismiss()
             }
+            .show()
+    }
+
+    private fun requestEditorExit() {
+        if (!shouldConfirmKeyboardEditorDiscard(viewModel.hasUnsavedChanges())) {
+            discardEditorAndNavigateBack()
+            return
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.custom_keyboard_discard_changes_title)
+            .setMessage(R.string.custom_keyboard_discard_changes_message)
+            .setPositiveButton(R.string.custom_keyboard_discard) { _, _ ->
+                discardEditorAndNavigateBack()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun discardEditorAndNavigateBack() {
+        viewModel.onCancelEditing()
+        findNavController().popBackStack()
+    }
+
+    private fun requestSave() {
+        if (!shouldConfirmKeyboardEditorOverwrite(viewModel.isEditingExistingLayout())) {
+            viewModel.saveLayout()
+            return
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.custom_keyboard_overwrite_title)
+            .setMessage(
+                getString(
+                    R.string.custom_keyboard_overwrite_message,
+                    viewModel.uiState.value.name
+                )
+            )
+            .setPositiveButton(R.string.custom_keyboard_overwrite) { _, _ ->
+                viewModel.saveLayout()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
 
@@ -482,3 +528,9 @@ internal fun EditorUiState.hasDeletableSelection(): Boolean {
         item.id == selectedId || (item is KeyItem && item.keyData.keyId == selectedId)
     }
 }
+
+internal fun shouldConfirmKeyboardEditorDiscard(hasUnsavedChanges: Boolean): Boolean =
+    hasUnsavedChanges
+
+internal fun shouldConfirmKeyboardEditorOverwrite(isExistingLayout: Boolean): Boolean =
+    isExistingLayout

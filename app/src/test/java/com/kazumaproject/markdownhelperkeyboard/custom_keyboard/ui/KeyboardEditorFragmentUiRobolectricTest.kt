@@ -26,6 +26,18 @@ import org.robolectric.annotation.Config
 class KeyboardEditorFragmentUiRobolectricTest {
 
     @Test
+    fun exitConfirmation_isShownOnlyWhenThereAreUnsavedChanges() {
+        assertFalse(shouldConfirmKeyboardEditorDiscard(hasUnsavedChanges = false))
+        assertTrue(shouldConfirmKeyboardEditorDiscard(hasUnsavedChanges = true))
+    }
+
+    @Test
+    fun overwriteConfirmation_isShownOnlyForExistingLayouts() {
+        assertFalse(shouldConfirmKeyboardEditorOverwrite(isExistingLayout = false))
+        assertTrue(shouldConfirmKeyboardEditorOverwrite(isExistingLayout = true))
+    }
+
+    @Test
     fun tenKeyTemplateUiVisibility_hidesFlexibleControlsAndShowsGridControls() {
         val binding = inflateBinding()
         val layout = KeyboardDefaultLayouts.createNumberTemplateLayout()

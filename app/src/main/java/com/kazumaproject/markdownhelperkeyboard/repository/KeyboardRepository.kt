@@ -328,13 +328,6 @@ class KeyboardRepository @Inject constructor(
         return dao.getLayoutsListNotFlow()
     }
 
-    suspend fun setCurrentLayoutUsageMode(
-        layoutId: Long,
-        usageMode: KeyboardLayoutUsageMode
-    ) {
-        dao.setLayoutUsageModeExclusive(layoutId, usageMode)
-    }
-
     suspend fun getLayoutName(id: Long): String? = dao.getLayoutName(id)
 
     fun getFullLayout(id: Long): Flow<KeyboardLayout> {
