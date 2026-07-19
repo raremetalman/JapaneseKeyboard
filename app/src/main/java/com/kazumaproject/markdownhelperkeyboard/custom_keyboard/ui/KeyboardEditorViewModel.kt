@@ -111,6 +111,10 @@ class KeyboardEditorViewModel @Inject constructor(
             KeyboardDefaultLayouts.createQwertyTemplateLayout()
         ),
         LayoutTemplate(
+            R.string.template_pc_qwerty,
+            KeyboardDefaultLayouts.createPcQwertyTemplateLayout()
+        ),
+        LayoutTemplate(
             R.string.template_empty_5x4_flexible,
             KeyboardDefaultLayouts.createEmpty5x4FlexibleTemplateLayout()
         ),

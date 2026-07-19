@@ -4655,6 +4655,7 @@ object KeyboardDefaultLayouts {
         "'" -> "quote"
         "," -> "comma"
         "." -> "period"
+        "@" -> "at_mark"
         ";" -> "semicolon"
         else -> char
     }
@@ -4902,6 +4903,65 @@ object KeyboardDefaultLayouts {
                 ),
                 TemplateRowSpec(
                     rowUnits = 6,
+                    items = listOf(
+                        switchImeSpec,
+                        spaceSpec(span = 14),
+                        enterSpec(span = 4)
+                    )
+                )
+            )
+        )
+        return buildAlphabetTemplate(spec)
+    }
+
+    /**
+     * Smartphone-friendly PC-style QWERTY template with a dedicated number row
+     * and the most commonly needed punctuation keys.
+     *
+     *   Row 0: 1 2 3 4 5 6 7 8 9 0
+     *   Row 1: q w e r t y u i o p
+     *   Row 2: a s d f g h j k l @
+     *   Row 3: Shift | z x c v b n m | . | Delete
+     *   Row 4: SwitchIme | Space | Enter
+     */
+    fun createPcQwertyTemplateLayout(): KeyboardLayout {
+        val spec = TemplateLayoutSpec(
+            idPrefix = "qwerty_pc",
+            name = "PC-style QWERTY",
+            rowUnitCount = 10,
+            columnUnitCount = 20,
+            rows = listOf(
+                TemplateRowSpec(
+                    rowUnits = 0,
+                    items = listOf(
+                        *chars("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
+                            .toTypedArray()
+                    )
+                ),
+                TemplateRowSpec(
+                    rowUnits = 2,
+                    items = listOf(
+                        *chars("q", "w", "e", "r", "t", "y", "u", "i", "o", "p")
+                            .toTypedArray()
+                    )
+                ),
+                TemplateRowSpec(
+                    rowUnits = 4,
+                    items = listOf(
+                        *chars("a", "s", "d", "f", "g", "h", "j", "k", "l", "@")
+                            .toTypedArray()
+                    )
+                ),
+                TemplateRowSpec(
+                    rowUnits = 6,
+                    items = listOf(
+                        shiftSpec,
+                        *chars("z", "x", "c", "v", "b", "n", "m", ".").toTypedArray(),
+                        deleteSpec
+                    )
+                ),
+                TemplateRowSpec(
+                    rowUnits = 8,
                     items = listOf(
                         switchImeSpec,
                         spaceSpec(span = 14),

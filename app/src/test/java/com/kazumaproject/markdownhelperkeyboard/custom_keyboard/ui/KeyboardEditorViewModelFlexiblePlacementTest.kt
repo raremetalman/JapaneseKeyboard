@@ -1414,6 +1414,22 @@ class KeyboardEditorViewModelFlexiblePlacementTest {
     }
 
     @Test
+    fun availableTemplates_containsPcQwertyFlexibleTemplate() {
+        val template = viewModel().availableTemplates.first {
+            it.nameResId == R.string.template_pc_qwerty
+        }
+
+        assertEquals(
+            KeyboardDefaultLayouts.createPcQwertyTemplateLayout(),
+            template.layout
+        )
+        val capabilities = keyboardEditorCapabilities(template.layout)
+        assertTrue(capabilities.showHalfCellControls)
+        assertTrue(capabilities.showInsertionDirectionControls)
+        assertFalse(capabilities.showGridStructuralControls)
+    }
+
+    @Test
     fun empty5x4FlexibleTemplate_isEmptyFlexibleEditorLayout() {
         val vm = viewModel()
         val template = vm.availableTemplates.first { it.nameResId == R.string.template_empty_5x4_flexible }

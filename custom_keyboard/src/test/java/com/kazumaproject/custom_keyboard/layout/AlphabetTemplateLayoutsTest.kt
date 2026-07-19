@@ -116,6 +116,73 @@ class AlphabetTemplateLayoutsTest {
     }
 
     @Test
+    fun pcQwertyTemplate_hasExpectedRowsActionsAndValidPlacement() {
+        val layout = KeyboardDefaultLayouts.createPcQwertyTemplateLayout()
+
+        assertEquals(10, layout.columnCount)
+        assertEquals(5, layout.rowCount)
+        assertEquals(20, layout.columnUnitCount)
+        assertEquals(10, layout.rowUnitCount)
+        assertTrue(layout.usesFlexiblePlacement())
+        assertFalse(
+            hasPlacementIssues(
+                items = layout.items,
+                rowUnitCount = layout.rowUnitCount,
+                columnUnitCount = layout.columnUnitCount
+            )
+        )
+
+        val characterLabelsByRow = (0 until 5).map { row ->
+            layout.items
+                .filterIsInstance<KeyItem>()
+                .filter { it.placement.rowUnits == row * 2 && !it.keyData.isSpecialKey }
+                .sortedBy { it.placement.columnUnits }
+                .map { it.keyData.label }
+        }
+        assertEquals(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"), characterLabelsByRow[0])
+        assertEquals(listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"), characterLabelsByRow[1])
+        assertEquals(listOf("a", "s", "d", "f", "g", "h", "j", "k", "l", "@"), characterLabelsByRow[2])
+        assertEquals(listOf("z", "x", "c", "v", "b", "n", "m", "."), characterLabelsByRow[3])
+        assertTrue(characterLabelsByRow[4].isEmpty())
+        assertAllCharacterKeysAreNormalText(layout)
+
+        val expectedSpecialActions = setOf(
+            KeyAction.ShiftKey,
+            KeyAction.Delete,
+            KeyAction.SwitchToNextIme,
+            KeyAction.Space,
+            KeyAction.Enter
+        )
+        val specialActions = layout.items
+            .filterIsInstance<KeyItem>()
+            .filter { it.keyData.isSpecialKey }
+            .mapNotNull { it.keyData.action }
+            .toSet()
+        assertEquals(expectedSpecialActions, specialActions)
+
+        assertNotNull(layout.keys.firstOrNull { it.keyId == "qwerty_pc_key_1" })
+        assertNotNull(layout.keys.firstOrNull { it.keyId == "qwerty_pc_key_at_mark" })
+        assertNotNull(layout.keys.firstOrNull { it.keyId == "qwerty_pc_key_period" })
+    }
+
+    @Test
+    fun pcQwertyTemplate_supportsPlacementSwap() {
+        val layout = KeyboardDefaultLayouts.createPcQwertyTemplateLayout()
+        val oneBefore = keyItem(layout, "qwerty_pc_key_1")
+        val periodBefore = keyItem(layout, "qwerty_pc_key_period")
+
+        val swapped = layout.swapKeyPlacements(
+            "qwerty_pc_key_1",
+            "qwerty_pc_key_period"
+        )
+
+        assertEquals(periodBefore.placement, keyItem(swapped, "qwerty_pc_key_1").placement)
+        assertEquals(oneBefore.placement, keyItem(swapped, "qwerty_pc_key_period").placement)
+        assertEquals(KeyAction.Text("1"), keyItem(swapped, "qwerty_pc_key_1").keyData.action)
+        assertEquals(KeyAction.Text("."), keyItem(swapped, "qwerty_pc_key_period").keyData.action)
+    }
+
+    @Test
     fun qwertyTemplate_usesHalfUnitPlacements() {
         val layout = KeyboardDefaultLayouts.createQwertyTemplateLayout()
 
